@@ -3,42 +3,51 @@
 This repository is a **faithful, runnable replication** of the paper:<br>
 **“d1: Scaling Reasoning in Diffusion Large Language Models via Reinforcement Learning”** (Zhao *et al.*, ICLR 2025).
 
-The code lives in [`d1_full.py`](./d1_full.py) and implements every component end‑to‑end:
+The code lives in [`d1_full.py`](./d1_full.py) and implements every component end‑to‑end. Key stages:
 
-| Stage | Paper section | File object | Notes |
-|-------|---------------|-------------|-------|
-| 1. Masked SFT | Algorithm 2, Sec 3.3 | `MaskedSFT` class | linear noise schedule $\alpha_t = 1-t$, LoRA $r{=}8$ |
-| 2. diffu‑GRPO | Algorithm 1, Eq (2‑4) | `DiffuGRPO` class | one‑step log‑$p$ estimator, random prompt masking $p_{mask}=0.15$ |
-| Decoder | Appendix B (Inference) | `diffuse_decode()` | semi‑AR 2‑token unmasking, block = 32 |
+| Stage | Paper section | Implementation | Hyper‑params |
+|-------|---------------|----------------|--------------|
+| 1. Masked SFT | Alg 2, Sec 3.3 | `MaskedSFT` class | LoRA r=8, α=16, seq 4096, LR 1e‑5, grad clip 0.1 |
+| 2. diffu‑GRPO | Alg 1, Eq (2‑4) | `DiffuGRPO` class | pmask=0.15, μ = 12, 4‑bit, LR 5e‑6, β = 0.01 |
+| 3. Decoder | App B Inference | `diffuse_decode()` | semi‑AR, 2‑token unmask per step, block=32 |
 
 ---
 ## 1 Mathematical foundations
 
 ### 1.1 Masked diffusion objective
-For a sequence $x_0$ and linear schedule $\alpha_t=1-t$, the NELBO to minimise during pre‑training or SFT is
+Let $x_0$ be a token sequence and adopt the linear schedule $\alpha_t=1-t$. The NELBO is
 
 $$
-\mathcal L_{\text{NELBO}}(\theta)\;=\;\mathbb E_{t\sim\mathcal U[0,1)}\,\mathbb E_{x_0,\,x_t\sim q_{t|0}}\Bigg[\;\frac1t \sum_{k=1}^{|x_t|}\mathbf 1[x^k_t = \texttt{<mask>}]\,\log f_\theta\bigl(x^k_0 \mid x_t\bigr)\Bigg].
+\mathcal L_{\mathrm{NELBO}}(\theta) = -\mathbb E_{t\sim U[0,1), x_0,x_t\sim q_{t|0}}\Biggl[\frac1t \sum_{k=1}^{|x_t|} \mathbf1[x^k_t=\mathrm{<mask>}]\log f_\theta(x^k_0\mid x_t)\Biggr].
 $$
 
-### 1.2 One‑step log‑probability estimator (Sec 3.1)
-Given *partially* masked prompt $q'$, the per‑token log‑prob is approximated by a **single forward pass**:
+### 1.2 One‑step log‑probability estimator
+Perturb the prompt $q\to q'$ by masking each token with prob $p_{mask}$. Then a single forward pass yields:
 
 $$
-\log \pi_\theta(o_k\mid q)\;\approx\;\log f_\theta\bigl(o_k\mid q'\,\Vert\,\underbrace{\texttt{<mask>}\,\dots\,\texttt{<mask>}}_{|o|}\bigr).
+\log\pi_\theta(o_k\mid q)\approx \log f_\theta\bigl(o_k\mid q',\underbrace{\mathrm{<mask>},\dots,\mathrm{<mask>}}_{|o|}\bigr).
 $$
 
-The sequence log‑prob uses a mean‑field factorisation $\log\pi(o|q)\approx\sum_k\log\pi(o_k|q)$.
+Sequencing uses mean‑field: $\log\pi(o\mid q) \approx \sum_k \log\pi(o_k\mid q)$.
 
-### 1.3 diffu‑GRPO loss
-
-For completions $o_i$ (group size $G$) and advantages $A_i^k = r_i - \frac{1}{G}\sum_j r_j$ we minimise:
+### 1.3 diffu‑GRPO loss
+For prompt $q$, sample $G$ completions $o_1,\dots,o_G$. Define per‑token advantage:
 
 $$
-\mathcal{L} = \mathbb{E}_{q,o}\left[\frac{1}{G}\sum_{i=1}^G\frac{1}{|o_i|}\sum_{k} \min\left(\rho_i^k A_i^k,\,\operatorname{clip}(\rho_i^k,1-\epsilon,1+\epsilon)A_i^k\right)\right] - \beta D_{\mathrm{KL}}\left(\pi_\theta\,\|\,\pi_{\text{ref}}\right)
+A_i^k = r_i - \tfrac1G \sum_{j=1}^G r_j,
 $$
 
-with importance ratio $\rho_i^k = \exp(\log\pi_\theta - \log\pi_{\text{old}})$
+and importance ratio:
+
+$$
+\rho_i^k = \exp\bigl(\log\pi_\theta(o_{i,k}\mid q) - \log\pi_{\theta_{\mathrm{old}}}(o_{i,k}\mid q)\bigr).
+$$
+
+Then:
+
+$$
+\mathcal L_{\mathrm{diffu\text{-}GRPO}}(\theta) = \mathbb E_{q, o_{1:G}\sim\pi_{\theta_{\mathrm{old}}}}\Biggl[\frac1G \sum_{i=1}^G\frac1{|o_i|}\sum_{k=1}^{|o_i|} \min\bigl(\rho_i^k A_i^k,\;\mathrm{clip}(\rho_i^k,1-\epsilon,1+\epsilon)A_i^k\bigr)\Biggr] - \beta\,D_{\mathrm{KL}}\bigl(\pi_\theta(\cdot\mid q)\|\pi_{\mathrm{ref}}(\cdot\mid q)\bigr).
+$$
 
 ---
 ## 2 Environment setup
@@ -48,47 +57,43 @@ conda activate d1
 pip install torch==2.2.0+cu118 torchvision --index-url https://download.pytorch.org/whl/cu118
 pip install transformers accelerate datasets trl peft bitsandbytes flash-attn==2.5.2 rich
 ```
-The script will download **LLaDA‑8B‑Instruct** automatically from Hugging Face.
 
 ---
 ## 3 Running experiments
-### 3.1 Stage 1 – Masked SFT
-```bash
+
+### Stage 1 – Masked SFT
+```
 python d1_full.py \
   --model llada/llada-8b-instruct \
-  --use_lora             # LoRA r=8 α=16
-  --task sft_only        # skips RL and saves to ./ckpt/sft
+  --use_lora \
+  --task sft_only
 ```
-### 3.2 Stage 2 – RL (diffu‑GRPO)
-Train **per task** (GSM8K shown):
-```bash
+
+### Stage 2 – diffu‑GRPO (Per benchmark)
+Example for GSM8K:
+```
 python d1_full.py \
   --model ./ckpt/sft \
   --use_lora \
   --task gsm8k \
   --steps_rl 7700 --bs_rl 6 --mu 12 --pmask 0.15
 ```
-Set `--task` to `math500`, `count`, or `sudoku` for the other benchmarks. Hyper‑parameters default to the paper.
+Set `--task` to `math500`, `count`, or `sudoku` for the other benchmarks.
 
 ---
 ## 4 Reproducing Table 1
-| Task | RL steps | Expected acc (512 tokens) |
-|------|---------:|---------------------------:|
-| GSM8K | 7 700 | **82.1 %** |
-| MATH500 | 6 600 | 40.2 % |
-| Countdown‑3 | 5 000 | 42.2 % |
-| Sudoku‑4×4 | 3 800 | 22.1 % |
-
-GPU budget matches the paper (8× A100‑80GB, Flash‑Attention 2, 4‑bit quant).
+| Task       | RL steps | Gen len |  Expected Acc  |
+|------------|---------:|--------:|--------------:|
+| GSM8K      | 7 700    | 512     | **82.1 %**    |
+| MATH500    | 6 600    | 512     | 40.2 %        |
+| Countdown 3| 5 000    | 512     | 42.2 %        |
+| Sudoku 4×4 | 3 800    | 512     | 22.1 %        |
 
 ---
 ## 5 Citation
-```
+```bibtex
 @inproceedings{zhao2025d1,
-  title     = {d1: Scaling Reasoning in Diffusion Large Language Models via Reinforcement Learning},
-  author    = {Siyan Zhao and Devaansh Gupta and Qinqing Zheng and Aditya Grover},
-  booktitle = {International Conference on Learning Representations},
-  year      = {2025}
+  title={d1: Scaling Reasoning in Diffusion Large Language Models via Reinforcement Learning},
+  author={Siyan Zhao and Devaansh Gupta and Qinqing Zheng and Aditya Grover},
+  booktitle={ICLR}, year={2025}
 }
-```
-
