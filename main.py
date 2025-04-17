@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, random, argparse, json, os, time, re, itertools
+import math, argparse, json, os, time, re, itertools
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
@@ -14,6 +14,7 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model
 from trl import AutoModelForSeq2SeqLMWithValueHead
+import secrets
 
 DTYPE = torch.bfloat16
 ACCEL = Accelerator()
@@ -75,8 +76,8 @@ class MaskedSFT:
     def _mask(self, ex):
         p_ids = self.tok(ex["prompt"], truncation=True,max_length=self.args.max_len, add_special_tokens=False)["input_ids"]
         r_ids = self.tok(ex["response"],truncation=True,max_length=self.args.max_len, add_special_tokens=False)["input_ids"]
-        t = random.random(); alpha = 1.-t
-        masked = [tid if random.random()<alpha else self.tok.mask_token_id for tid in r_ids]
+        t = secrets.SystemRandom().random(); alpha = 1.-t
+        masked = [tid if secrets.SystemRandom().random()<alpha else self.tok.mask_token_id for tid in r_ids]
         return {"input_ids": p_ids+masked, "labels": r_ids}
 
     def fit(self, ds):
