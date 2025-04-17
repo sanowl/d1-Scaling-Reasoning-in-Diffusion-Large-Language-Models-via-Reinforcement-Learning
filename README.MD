@@ -31,13 +31,13 @@ $$
 The sequence log‑prob uses a mean‑field factorisation $\log\pi(o|q)\approx\sum_k\log\pi(o_k|q)$.
 
 ### 1.3 diffu‑GRPO loss
-For completions $o_i$ (group size $G$) and advantages $A_i^k = r_i - \tfrac1G\sum_j r_j$ we minimise
+For completions $o_i$ (group size $G$) and advantages $A_i^k = r_i - \frac{1}{G}\sum_j r_j$ we minimise
 
 $$
-\mathcal L=\mathbb E_{q,o}\Bigg[\frac1{G}\!\sum_{i=1}^G\frac1{|o_i|}\sum_{k} \min\Big(\rho_i^k A_i^k,\;\operatorname{clip}(\rho_i^k,1\!-
-\!\epsilon,1\!+\!\epsilon)A_i^k\Big)\;\Bigg]\; -\;\beta \,D_{\mathrm{KL}}\bigl(\pi_\theta\,\|\,\pi_{\text{ref}}\bigr)
+\mathcal{L} = \mathbb{E}_{q,o}\Bigg[\frac{1}{G}\sum_{i=1}^G\frac{1}{|o_i|}\sum_{k} \min\Big(\rho_i^k A_i^k,\,\operatorname{clip}(\rho_i^k,1-\epsilon,1+\epsilon)A_i^k\Big)\Bigg] - \beta D_{\mathrm{KL}}\big(\pi_\theta\,\|\,\pi_{\text{ref}}\big)
 $$
-with importance ratio $\rho_i^k = \exp\bigl(\log\pi_\theta - \log\pi_{\text{old}}\bigr)$.
+
+with importance ratio $\rho_i^k = \exp(\log\pi_\theta - \log\pi_{\text{old}})$.
 
 ---
 ## 2 Environment setup
