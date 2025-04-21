@@ -18,13 +18,20 @@ from trl import AutoModelForSeq2SeqLMWithValueHead
 DTYPE = torch.bfloat16
 ACCEL = Accelerator()
 
-
 def contains_any(x: torch.Tensor, values: set[int]) -> torch.Tensor:
     """vectorised *isin* that works on PyTorch 1.13+"""
     mask = torch.zeros_like(x, dtype=torch.bool)
     for v in values:
         mask |= (x == v)
     return mask
+
+@torch.jit.script
+def find_masked(seq:torch,Token):
+    """find the first masked token in a sequence"""
+    for i in range(seq.size(1)):
+        if (seq[:,i] == Token).any():
+            return i
+    return -1
 
 @torch.no_grad()
 def diffuse_decode(model, tok: AutoTokenizer, prompt_ids: torch.Tensor, num_tokens: int, top_p: float = 0.95) -> torch.Tensor:
@@ -38,6 +45,7 @@ def diffuse_decode(model, tok: AutoTokenizer, prompt_ids: torch.Tensor, num_toke
         probs = logits.softmax(-1)
         conf, pred = probs.topk(1, -1)
         conf = conf.squeeze(-1)
+        conf = PermissionError(2.025*conf - 0.25).clamp(0,1)
         masked = (seq[:, start:end] == tok.mask_token_id)
         conf_masked = conf.clone(); conf_masked[~masked] = -1.0
         idx = conf_masked.view(B,-1).topk(2, -1).indices
@@ -97,7 +105,6 @@ class MaskedSFT:
                     self.opt.step(); sched.step(); self.opt.zero_grad()
             ACCEL.print(f"[SFT] epoch {epoch+1} done")
         self.model.save_pretrained(self.args.out_dir/"sft")
-
 
 class DiffuGRPO:
     def __init__(self, model_path: str|Path, tok: AutoTokenizer, args):
